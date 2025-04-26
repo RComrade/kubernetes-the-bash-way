@@ -956,9 +956,12 @@ function generate_configs_from_templates() {
     echo -e "${GREEN}All configs generated successfully into configs/.${RESET}"
 }
 
-# Function to set up static routes between nodes
 function setup_routes() {
-    echo -e "${BLUE}Setting up static routes between nodes...${RESET}"
+    echo -e "${BLUE}Setting up static routes between nodes with redundancy...${RESET}"
+
+    # Extract base network prefix (first two octets) and subnet mask
+    local BASE_SUBNET_PREFIX=$(echo "$BASE_WORKER_SUBNET" | cut -d'.' -f1,2)
+    local BASE_SUBNET_MASK=$(echo "$BASE_WORKER_SUBNET" | cut -d'/' -f2)
 
     # Get IPs of all controllers
     CONTROLLER_IPS=()
@@ -966,61 +969,77 @@ function setup_routes() {
         CONTROLLER_IPS+=("$(yq -r ".nodes.controllers[$i].ip" configs/hosts.yaml)")
     done
 
-    # Get IPs and subnets of all worker nodes
+    # Get IPs of all worker nodes
     NODE_IPS=()
-    NODE_SUBNETS=()
     for i in $(seq 0 $(($WORKER_COUNT - 1))); do
         NODE_IPS+=("$(yq -r ".nodes.workers[$i].ip" configs/hosts.yaml)")
-        NODE_SUBNETS+=("$(yq -r ".nodes.workers[$i].subnet" configs/hosts.yaml)")
     done
 
-    # Add routes on all controllers
+    # Add redundant routes on all controllers to all worker subnets
     for SERVER_IP in "${CONTROLLER_IPS[@]}"; do
         echo -e "${CYAN}Adding routes on controller ($SERVER_IP)...${RESET}"
         for i in "${!NODE_IPS[@]}"; do
-            echo -e "${YELLOW}On controller: route to ${NODE_SUBNETS[$i]} via ${NODE_IPS[$i]}${RESET}"
-            sshpass -p "$SUDO_PASSWORD" ssh -o StrictHostKeyChecking=no "$USERNAME@$SERVER_IP" "echo '$SUDO_PASSWORD' | sudo -S ip route add ${NODE_SUBNETS[$i]} via ${NODE_IPS[$i]} || true"
+            local TARGET_SUBNET="${BASE_SUBNET_PREFIX}.$((i+1)).0/${BASE_SUBNET_MASK}"
+            for j in "${!NODE_IPS[@]}"; do
+                local METRIC=$((100 + j))
+                echo -e "${YELLOW}On controller $SERVER_IP: route to ${TARGET_SUBNET} via ${NODE_IPS[$j]} metric ${METRIC}${RESET}"
+                sshpass -p "$SUDO_PASSWORD" ssh -o StrictHostKeyChecking=no "$USERNAME@$SERVER_IP" "echo '$SUDO_PASSWORD' | sudo -S bash -c '
+                    ip route show | grep -q "${TARGET_SUBNET} via ${NODE_IPS[$j]}" || ip route add ${TARGET_SUBNET} via ${NODE_IPS[$j]} dev eth0 metric ${METRIC}
+                '"
+            done
         done
     done
 
-    # Add routes between workers
+    # Add redundant routes between workers
     for i in "${!NODE_IPS[@]}"; do
         NODE_IP=${NODE_IPS[$i]}
-        NODE_SUBNET=${NODE_SUBNETS[$i]}
+
+        echo -e "${CYAN}Adding routes on worker $NODE_IP...${RESET}"
 
         for j in "${!NODE_IPS[@]}"; do
             if [[ $i -ne $j ]]; then
-                TARGET_IP=${NODE_IPS[$j]}
-                TARGET_SUBNET=${NODE_SUBNETS[$j]}
-                echo -e "${YELLOW}On worker $NODE_IP: route to ${TARGET_SUBNET} via ${TARGET_IP}${RESET}"
-                sshpass -p "$SUDO_PASSWORD" ssh -o StrictHostKeyChecking=no "$USERNAME@$NODE_IP" "echo '$SUDO_PASSWORD' | sudo -S ip route add ${TARGET_SUBNET} via ${TARGET_IP} || true"
+                local TARGET_SUBNET="${BASE_SUBNET_PREFIX}.$((j+1)).0/${BASE_SUBNET_MASK}"
+                for k in "${!NODE_IPS[@]}"; do
+                    local METRIC=$((100 + k))
+                    echo -e "${YELLOW}On worker $NODE_IP: route to ${TARGET_SUBNET} via ${NODE_IPS[$k]} metric ${METRIC}${RESET}"
+                    sshpass -p "$SUDO_PASSWORD" ssh -o StrictHostKeyChecking=no "$USERNAME@$NODE_IP" "echo '$SUDO_PASSWORD' | sudo -S bash -c '
+                        ip route show | grep -q "${TARGET_SUBNET} via ${NODE_IPS[$k]}" || ip route add ${TARGET_SUBNET} via ${NODE_IPS[$k]} dev eth0 metric ${METRIC}
+                    '"
+                done
             fi
         done
     done
 
-    echo -e "${GREEN}Static routes successfully configured on all controllers and workers.${RESET}"
+    echo -e "${GREEN}Static redundant routes successfully configured on all controllers and workers.${RESET}"
 }
 
-# Function to prepare worker nodes before Kubernetes components installation
 function prepare_nodes() {
     echo -e "${BLUE}Preparing worker nodes...${RESET}"
+
+    # Extract base network prefix (first two octets) and subnet mask from BASE_WORKER_SUBNET
+    local BASE_SUBNET_PREFIX=$(echo "$BASE_WORKER_SUBNET" | cut -d'.' -f1,2)
+    local BASE_SUBNET_MASK=$(echo "$BASE_WORKER_SUBNET" | cut -d'/' -f2)
 
     for i in $(seq 0 $(($WORKER_COUNT - 1))); do
         local WORKER_HOSTNAME=$(yq -r ".nodes.workers[$i].hostname" configs/hosts.yaml)
 
-        echo -e "${CYAN}Preparing $WORKER_HOSTNAME...${RESET}"
+        # Dynamically generate a unique subnet for each worker node
+        local BASE_WORKER_SUBNET="$BASE_SUBNET_PREFIX.$((i+1)).0/$BASE_SUBNET_MASK"
+        export BASE_WORKER_SUBNET
 
-        # Generate specific configs for each worker node
+        echo -e "${CYAN}Preparing $WORKER_HOSTNAME with podCIDR $BASE_WORKER_SUBNET...${RESET}"
+
+        # Generate specific configuration files for each worker node
         envsubst < preconfigs/10-bridge.conf > configs/10-bridge-$WORKER_HOSTNAME.conf
         envsubst < preconfigs/kubelet-config.yaml > configs/kubelet-config-$WORKER_HOSTNAME.yaml
 
-        # Copy generated configs to the worker node
+        # Copy generated configuration files to the worker node
         sshpass -p "$SUDO_PASSWORD" scp -o StrictHostKeyChecking=no \
             configs/10-bridge-$WORKER_HOSTNAME.conf \
             configs/kubelet-config-$WORKER_HOSTNAME.yaml \
             "$USERNAME@$WORKER_HOSTNAME:/home/$USERNAME/"
 
-        # Copy binaries and static configs to the worker node
+        # Copy binaries and static configurations to the worker node
         sshpass -p "$SUDO_PASSWORD" scp -o StrictHostKeyChecking=no \
             downloads/runc \
             downloads/crictl.tar.gz \
@@ -1038,7 +1057,7 @@ function prepare_nodes() {
             configs/units/kube-proxy.service \
             "$USERNAME@$WORKER_HOSTNAME:/home/$USERNAME/"
 
-        # System preparation on the worker node
+        # Prepare the system on the worker node
         sshpass -p "$SUDO_PASSWORD" ssh -o StrictHostKeyChecking=no "$USERNAME@$WORKER_HOSTNAME" "echo '$SUDO_PASSWORD' | sudo -S bash -c '
             apt-get update
             apt-get install -y socat conntrack ipset
@@ -1060,6 +1079,10 @@ function setup_nodes() {
         echo -e "${CYAN}Setting up $WORKER_HOSTNAME...${RESET}"
 
         sshpass -p "$SUDO_PASSWORD" ssh -o StrictHostKeyChecking=no "$USERNAME@$WORKER_HOSTNAME" "echo '$SUDO_PASSWORD' | sudo -S bash -c '
+            # Load the br_netfilter module
+            modprobe br_netfilter
+
+            # Start configuring worker node
             mkdir -p /etc/cni/net.d /opt/cni/bin /var/lib/kubelet /var/lib/kube-proxy /var/lib/kubernetes /var/run/kubernetes
 
             mkdir -p containerd
@@ -1093,6 +1116,7 @@ function setup_nodes() {
     done
 }
 
+
 # Function to configure local kubectl context
 function configure_kubectl() {
     echo -e "${BLUE}Configuring local kubectl context...${RESET}"
@@ -1116,6 +1140,51 @@ function configure_kubectl() {
 
     echo -e "${GREEN}kubectl configured to access the cluster via $SERVER_URL${RESET}"
 }
+
+function install_coredns() {
+    CONFIG_FILE="configs/coredns.yaml"
+
+    # Check if the coredns config exists
+    if [ ! -f "$CONFIG_FILE" ]; then
+        echo -e "${RED}[ERROR] File $CONFIG_FILE does not exist. Cannot deploy CoreDNS.${RESET}"
+        return 1
+    fi
+
+    echo -e "${BLUE}[INFO] Applying CoreDNS configuration...${RESET}"
+    kubectl apply -f "$CONFIG_FILE"
+
+    echo -e "${BLUE}[INFO] Waiting for CoreDNS pods to be ready...${RESET}"
+    kubectl wait --namespace kube-system --for=condition=Ready pods --selector=k8s-app=kube-dns --timeout=90s
+
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}[SUCCESS] CoreDNS successfully deployed and ready.${RESET}"
+    else
+        echo -e "${RED}[ERROR] CoreDNS pods failed to become ready in time.${RESET}"
+    fi
+}
+
+function install_flannel() {
+    CONFIG_FILE="configs/kube-flannel.yaml"
+
+    # Check if the flannel config exists
+    if [ ! -f "$CONFIG_FILE" ]; then
+        echo -e "${RED}[ERROR] File $CONFIG_FILE does not exist. Cannot deploy Flannel.${RESET}"
+        return 1
+    fi
+
+    echo -e "${BLUE}[INFO] Applying Flannel configuration...${RESET}"
+    kubectl apply -f "$CONFIG_FILE"
+
+    echo -e "${BLUE}[INFO] Waiting for Flannel pods to be ready...${RESET}"
+    kubectl wait --namespace kube-flannel --for=condition=Ready pods --selector=app=flannel --timeout=90s
+
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}[SUCCESS] Flannel successfully deployed and ready.${RESET}"
+    else
+        echo -e "${RED}[ERROR] Flannel pods failed to become ready in time.${RESET}"
+    fi
+}
+
 
 function install_metallb() {
     echo -e "${BLUE}Installing MetalLB...${RESET}"
@@ -1158,16 +1227,6 @@ function install_metallb() {
         echo -e "${RED}Failed to apply MetalLB manifest.${RESET}"
         exit 1
     fi
-
-    # Patch the MetalLB controller to fix webhook listen address
-    echo -e "${CYAN}Patching MetalLB controller deployment to fix webhook listening address...${RESET}"
-    kubectl patch deployment controller -n metallb-system --type='json' -p='[
-    {
-        "op": "add",
-        "path": "/spec/template/spec/containers/0/args/-",
-        "value": "--webhook-host=0.0.0.0"
-    }
-    ]'
 
     # Wait for MetalLB controller to be available
     echo -e "${CYAN}Waiting for MetalLB controller to be ready...${RESET}"
@@ -1305,5 +1364,7 @@ setup_kubernetes_master
 prepare_nodes
 setup_nodes
 configure_kubectl
+install_coredns
+#install_flannel
 install_metallb
 setup_apiserver_loadbalancer
