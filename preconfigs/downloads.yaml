@@ -31,3 +31,8 @@ downloads:
 
   - name: etcd.tar.gz
     url: https://github.com/etcd-io/etcd/releases/download/v${ETCD_V}/etcd-v${ETCD_V}-linux-${SYSTEM_ARCH}.tar.gz
+  
+  - name: metallb.yaml
+    url: METALLB_MANIFEST_URL=https://raw.githubusercontent.com/metallb/metallb/v${METALLB_VERSION}/config/manifests/metallb-native.yaml
+
+

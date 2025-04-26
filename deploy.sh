@@ -1118,6 +1118,25 @@ function configure_kubectl() {
   echo -e "${GREEN}kubectl configured to access the cluster via $SERVER_URL${RESET}"
 }
 
+function install_metallb() {
+    echo -e "${BLUE}Installing MetalLB...${RESET}"
+
+    local METALLB_MANIFEST="downloads/metallb.yaml"
+
+    if [ ! -f "$METALLB_MANIFEST" ]; then
+        echo -e "${RED}MetalLB manifest not found at $METALLB_MANIFEST. Please check downloads.${RESET}"
+        exit 1
+    fi
+
+    # Создаем namespace для metallb (если еще нет)
+    kubectl create namespace metallb-system --dry-run=client -o yaml | kubectl apply -f -
+
+    # Применяем MetalLB манифест
+    kubectl apply -f "$METALLB_MANIFEST"
+
+    echo -e "${GREEN}MetalLB installed successfully.${RESET}"
+}
+
 
 check_os
 get_architecture
@@ -1150,3 +1169,4 @@ setup_kubernetes_master
 prepare_nodes
 setup_nodes
 configure_kubectl
+install_metallb
