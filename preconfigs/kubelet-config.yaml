@@ -9,12 +9,12 @@ authentication:
     clientCAFile: "/var/lib/kubelet/ca.crt"
 authorization:
   mode: Webhook
-clusterDomain: "$CLUSTER_DOMAIN"
+clusterDomain: "$DOMAIN"
 clusterDNS:
-  - "$CLUSTER_IP_RANGE"
+  - "$CLUSTER_DNS_SERVICE_IP"
 cgroupDriver: systemd
 containerRuntimeEndpoint: "unix:///var/run/containerd/containerd.sock"
-podCIDR: "$SUBNET"
+podCIDR: "$BASE_WORKER_SUBNET"
 resolvConf: "/etc/resolv.conf"
 runtimeRequestTimeout: "15m"
 tlsCertFile: "/var/lib/kubelet/kubelet.crt"

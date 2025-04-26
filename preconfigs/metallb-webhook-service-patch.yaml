@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: metallb-webhook-service
+  namespace: metallb-system
+spec:
+  ports:
+  - name: webhook
+    port: 9443
+    protocol: TCP
+    targetPort: 9443
+  selector:
+    app: metallb
+    component: controller
+  type: ClusterIP

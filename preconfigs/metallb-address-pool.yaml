@@ -1,0 +1,8 @@
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: kubernetes-api-pool
+  namespace: metallb-system
+spec:
+  addresses:
+    - ${K8S_API_LB_POOL_START}-${K8S_API_LB_POOL_END}

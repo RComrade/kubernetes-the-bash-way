@@ -147,7 +147,6 @@ function download_files() {
     echo -e "${YELLOW}Starting file downloads...${RESET}"
     mkdir -p downloads
 
-    # Используем yq для чтения yaml-структуры
     mapfile -t entries < <(yq -r '.downloads[] | "\(.name) \(.url)"' "$DOWNLOADS_FILE")
 
     for entry in "${entries[@]}"; do
@@ -172,10 +171,10 @@ function download_files() {
 function generate_machines_list () {
     OUTPUT_FILE="configs/hosts.yaml"
     
-    # Начинаем файл с nodes
+    # Initialize the YAML file with "nodes" section
     echo "nodes:" > "$OUTPUT_FILE"
     
-    # Генерация контроллеров
+    # Generate controller entries
     echo "  controllers:" >> "$OUTPUT_FILE"
     for i in $(seq 0 $(($CONTROLLER_COUNT - 1))); do
         CONTROLLER_HOSTNAME_VAR="CONTROLLER_${i}_HOSTNAME"
@@ -184,14 +183,13 @@ function generate_machines_list () {
         CONTROLLER_HOSTNAME="${!CONTROLLER_HOSTNAME_VAR}"
         CONTROLLER_IPV4="${!CONTROLLER_IPV4_VAR}"
 
-        # Записываем данные о контроллере в файл
         echo "    - name: ${CONTROLLER_HOSTNAME}" >> "$OUTPUT_FILE"
         echo "      ip: ${CONTROLLER_IPV4}" >> "$OUTPUT_FILE"
         echo "      hostname: ${CONTROLLER_HOSTNAME}" >> "$OUTPUT_FILE"
         echo "      fqdn: ${CONTROLLER_HOSTNAME}.${DOMAIN}" >> "$OUTPUT_FILE"
     done
 
-    # Генерация воркеров
+    # Generate worker entries
     echo "  workers:" >> "$OUTPUT_FILE"
     for i in $(seq 0 $(($WORKER_COUNT - 1))); do
         WORKER_HOSTNAME_VAR="WORKER_${i}_HOSTNAME"
@@ -200,23 +198,23 @@ function generate_machines_list () {
         WORKER_HOSTNAME="${!WORKER_HOSTNAME_VAR}"
         WORKER_IPV4="${!WORKER_IPV4_VAR}"
 
-        # Записываем данные о воркере в файл
         echo "    - name: ${WORKER_HOSTNAME}" >> "$OUTPUT_FILE"
         echo "      ip: ${WORKER_IPV4}" >> "$OUTPUT_FILE"
         echo "      hostname: ${WORKER_HOSTNAME}" >> "$OUTPUT_FILE"
         echo "      fqdn: ${WORKER_HOSTNAME}.${DOMAIN}" >> "$OUTPUT_FILE"
     done
 
-    # Выводим сообщение о завершении
+    # Print success message
     echo -e "${GREEN}YAML file generated at $OUTPUT_FILE.${RESET}"
 }
 
+
 function check_availability() {
-    # Собираем все IP-адреса из всех нод (контроллеров и воркеров)
+    # Collect all IP addresses from all nodes (controllers and workers)
     IP_LIST=$(yq -r '.nodes.controllers[].ip, .nodes.workers[].ip' configs/hosts.yaml)
 
     for IP in $IP_LIST; do
-        # Пингуем узел 3 раза и подавляем вывод
+        # Ping the node 3 times and suppress the output
         if ping -c 3 "$IP" >/dev/null 2>&1; then
             echo -e "${GREEN}[SUCCESS] Ping to $IP is successful.${RESET}"
         else
@@ -225,128 +223,125 @@ function check_availability() {
     done
 }
 
+
 function generate_etchosts() {
-    # Путь к файлу для записи
+    # Path to the output file
     ETCHOSTS_FILE="configs/etchosts"
 
-    # Проверяем, существует ли файл, если нет, создаём его
+    # Check if the file exists, if not, create it
     if [ ! -f "$ETCHOSTS_FILE" ]; then
         echo -e "${YELLOW}File $ETCHOSTS_FILE does not exist. Creating...${RESET}"
         touch $ETCHOSTS_FILE
     fi
 
-    # Очищаем файл, чтобы избежать дубликатов
+    # Clear the file to avoid duplicates
     echo "# /etc/hosts generated from hosts.yaml" > $ETCHOSTS_FILE
     echo "# Generated on $(date)" >> $ETCHOSTS_FILE
     echo "" >> $ETCHOSTS_FILE
 
-    # Получаем список всех нод (контроллеров и воркеров) и записываем в файл
+    # Get the list of all nodes (controllers and workers) and write to the file
     echo -e "${BLUE}Generating entries for nodes...${RESET}"
     yq -r '.nodes.controllers[], .nodes.workers[] | "\(.ip) \(.fqdn) \(.hostname)"' configs/hosts.yaml >> $ETCHOSTS_FILE
 
-    # Выводим успешное сообщение
+    # Print success message
     echo -e "${GREEN}Entries generated and written to $ETCHOSTS_FILE${RESET}"
 }
 
+
 function distribute_etchosts() {
-    # Путь к файлу etchosts
+    # Path to the etchosts file
     ETCHOSTS_FILE="configs/etchosts"
     
-    # Получаем список всех нод (контроллеров и воркеров) из YAML
+    # Get the list of all nodes (controllers and workers) from the YAML file
     NODE_LIST=$(yq -r '.nodes.controllers[], .nodes.workers[] | "\(.ip) \(.fqdn)"' configs/hosts.yaml)
 
-    # Обновляем локальный /etc/hosts
+    # Update the local /etc/hosts
     echo -e "${BLUE}Updating local /etc/hosts...${RESET}"
     
-    # Формируем временный файл для локального /etc/hosts
+    # Create a temporary file for the new /etc/hosts
     TEMP_HOSTS="/tmp/hosts_temp"
     
-    # Сохраняем первые две строки
+    # Save the first two lines from the original /etc/hosts
     sudo sed -n "1,2p" /etc/hosts > "$TEMP_HOSTS"
     
-    # Добавляем все записи из etchosts в новый файл, если их нет
+    # Append all entries from etchosts if not already present
     while IFS=" " read -r IP HOSTNAME; do
-        # Если IP и HOSTNAME нет в файле, добавляем
         if ! grep -q "$IP" "$TEMP_HOSTS"; then
             echo "$IP $HOSTNAME" >> "$TEMP_HOSTS"
         fi
     done < "$ETCHOSTS_FILE"
 
-    # Перезаписываем локальный /etc/hosts
+    # Replace the local /etc/hosts with the new version
     sudo mv "$TEMP_HOSTS" /etc/hosts
 
     echo -e "${GREEN}[SUCCESS] Local /etc/hosts updated.${RESET}"
 
-    # Для каждой ноды добавляем в /etc/hosts на удаленной машине
+    # Distribute updated /etc/hosts to all remote nodes
     for NODE in $NODE_LIST; do
         IP=$(echo "$NODE" | cut -d ' ' -f 1)
         HOSTNAME=$(echo "$NODE" | cut -d ' ' -f 2)
 
-        # Копируем файл на удаленную машину
+        # Copy the etchosts file to the remote node
         echo -e "${BLUE}Copying $ETCHOSTS_FILE to $IP...${RESET}"
         sshpass -p "$SUDO_PASSWORD" scp "$ETCHOSTS_FILE" "$USERNAME@$IP:/tmp/etchosts"
 
-        # Команда для сохранения первых двух строк, удаляя остальные и добавляя новый файл
+        # Update /etc/hosts on the remote node
         echo "$SUDO_PASSWORD" | sshpass -p "$SUDO_PASSWORD" ssh -n "$USERNAME@$IP" "echo '$SUDO_PASSWORD' | sudo -S bash -c '
-            # Сохраняем только первые две строки
-            sed -n \"1,2p\" /etc/hosts > /tmp/hosts_temp  # Сохраняем первые две строки
-            cat /tmp/etchosts >> /tmp/hosts_temp  # Добавляем новый файл
-            # Добавляем запись о текущем хосте, если её нет
+            sed -n \"1,2p\" /etc/hosts > /tmp/hosts_temp  # Save the first two lines
+            cat /tmp/etchosts >> /tmp/hosts_temp  # Append new entries
             if ! grep -q \"$IP\" /tmp/hosts_temp; then
                 echo \"$IP $HOSTNAME\" >> /tmp/hosts_temp
             fi
-            mv /tmp/hosts_temp /etc/hosts  # Перезаписываем /etc/hosts
-            rm -f /tmp/etchosts  # Удаляем временный файл
+            mv /tmp/hosts_temp /etc/hosts  # Replace the old hosts file
+            rm -f /tmp/etchosts  # Remove temporary file
         '"
 
         echo -e "${GREEN}[SUCCESS] /etc/hosts updated on $IP.${RESET}"
     done
 }
 
-
-# Функция для генерации ключей CA и сертификата
+# Function to generate CA key and certificate
 function create_ca_crt_and_key() {
-    # Генерация частного ключа для CA
-    mkdir -p ./keys  # Создаем папку keys, если она еще не существует
+    # Generate a private key for the CA
+    mkdir -p ./keys  # Create the 'keys' directory if it doesn't exist
     openssl genrsa -out ./keys/ca.key 4096
     openssl req -x509 -new -sha512 -noenc -key ./keys/ca.key -days 3653 -config preconfigs/ca.conf -out ./keys/ca.crt
 }
 
-# Функция для добавления записей DNS и IP в kube-api-server_alt_names
+# Function to add DNS and IP entries to kube-api-server alt_names
 function add_controllers_to_alt_names() {
     cp "preconfigs/ca.conf" "configs/ca.conf"
     
-    # Считываем IP-адреса и FQDN для всех контроллеров из hosts.yaml
+    # Read IP addresses and FQDNs of all controllers from hosts.yaml
     yq -r '.nodes.controllers[] | "\(.ip) \(.fqdn)"' configs/hosts.yaml | while IFS=" " read -r ip fqdn; do
-        # Проверяем, есть ли уже такой IP и FQDN в ca.conf
+        # Check if this IP and FQDN already exist in ca.conf
         if ! grep -q "IP.*$ip" "configs/ca.conf" && ! grep -q "DNS.*$fqdn" "configs/ca.conf"; then
-            # Находим максимальные индексы для IP и DNS
+            # Find the next available indexes for IP and DNS entries
             local NEXT_IP_INDEX=$(( $(grep -oP "^IP\.\K\d+" "configs/ca.conf" | sort -n | tail -n 1) + 1 ))
             local NEXT_DNS_INDEX=$(( $(grep -oP "^DNS\.\K\d+" "configs/ca.conf" | sort -n | tail -n 1) + 1 ))
 
-            # Добавляем запись для IP
+            # Add new IP entry
             echo -e "IP.$NEXT_IP_INDEX = $ip" >> "configs/ca.conf"
-            echo "Добавлена запись IP.$NEXT_IP_INDEX = $ip"
+            echo -e "${GREEN}Added IP entry: IP.$NEXT_IP_INDEX = $ip${RESET}"
 
-            # Добавляем запись для FQDN
+            # Add new DNS entry
             echo -e "DNS.$NEXT_DNS_INDEX = $fqdn" >> "configs/ca.conf"
-            echo "Добавлена запись DNS.$NEXT_DNS_INDEX = $fqdn"
+            echo -e "${GREEN}Added DNS entry: DNS.$NEXT_DNS_INDEX = $fqdn${RESET}"
         else
-            echo "Запись для $fqdn или $ip уже существует. Пропускаем."
+            echo -e "${YELLOW}Entry for $fqdn or $ip already exists. Skipping.${RESET}"
         fi
     done
 }
 
-# Функция для добавления конфигурации воркеров в ca.conf
+# Function to add worker node configurations into ca.conf
 function add_workers_to_alt_names() {
-    
-    # Считываем информацию о воркерах из hosts.yaml с помощью yq
+    # Read worker information from hosts.yaml using yq
     yq -r '.nodes.workers[] | "\(.hostname) \(.ip)"' configs/hosts.yaml | while IFS=" " read -r WORKER_HOSTNAME IP; do
-        # Проверяем, существует ли уже секция для этого воркера в ca.conf
+        # Check if a section for this worker already exists in ca.conf
         if grep -q "^\[$WORKER_HOSTNAME\]" "configs/ca.conf"; then
-            echo "Конфигурация для $WORKER_HOSTNAME уже существует в configs/ca.conf. Пропускаем."
+            echo -e "${YELLOW}Configuration for $WORKER_HOSTNAME already exists in configs/ca.conf. Skipping.${RESET}"
         else
-            # Добавляем секцию конфигурации для воркера в ca.conf
+            # Add configuration section for the worker into ca.conf
             echo "" >> "configs/ca.conf"
             tee -a "configs/ca.conf" > /dev/null << EOF
 [$WORKER_HOSTNAME]
@@ -371,87 +366,91 @@ ST = Washington
 L  = Seattle
 EOF
 
-            echo "Конфигурация для $WORKER_HOSTNAME была добавлена в configs/ca.conf."
+            echo -e "${GREEN}Configuration for $WORKER_HOSTNAME has been added to configs/ca.conf.${RESET}"
         fi
     done
 }
+
 
 # Function to generate SSH keys automatically
 function generate_ssh_keys() {
     # Path to store the generated SSH key (default location)
     local SSH_KEY_PATH="$HOME/.ssh/id_rsa"
     
-    # Check if the key already exists
+    # Check if the SSH key already exists
     if [ -f "$SSH_KEY_PATH" ]; then
-        echo "SSH key already exists at $SSH_KEY_PATH. Skipping generation."
+        echo -e "${YELLOW}SSH key already exists at $SSH_KEY_PATH. Skipping generation.${RESET}"
     else
-        # Generate SSH keys with default settings (no passphrase, default location)
-        echo "Generating SSH key pair..."
+        # Generate SSH key pair with default settings (no passphrase, default location)
+        echo -e "${BLUE}Generating SSH key pair...${RESET}"
         ssh-keygen -t rsa -b 4096 -f "$SSH_KEY_PATH" -N "" &> /dev/null
         if [ $? -eq 0 ]; then
-            echo "SSH key pair generated successfully."
-            echo "Private key: $SSH_KEY_PATH"
-            echo "Public key: $SSH_KEY_PATH.pub"
+            echo -e "${GREEN}SSH key pair generated successfully.${RESET}"
+            echo -e "${BLUE}Private key: $SSH_KEY_PATH${RESET}"
+            echo -e "${BLUE}Public key: $SSH_KEY_PATH.pub${RESET}"
         else
-            echo "Failed to generate SSH key pair."
+            echo -e "${RED}Failed to generate SSH key pair.${RESET}"
         fi
     fi
 }
 
-# Функция для рассылки SSH-ключей, используя IP из hosts.yaml
+# Function to distribute SSH keys to all nodes using IPs from hosts.yaml
 function distribute_ssh_keys() {
-    # Считываем информацию из hosts.yaml и рассылаем ключи каждому хосту
-    for i in $(seq 1 $CONTROLLER_COUNT); do
-        controller_ip=$(yq -r ".nodes.controllers[$i-1].ip" configs/hosts.yaml)
-        controller_fqdn=$(yq -r ".nodes.controllers[$i-1].fqdn" configs/hosts.yaml)
+    # Read information from hosts.yaml and distribute keys to each controller
+    for i in $(seq 0 $(($CONTROLLER_COUNT - 1))); do
+        controller_ip=$(yq -r ".nodes.controllers[$i].ip" configs/hosts.yaml)
+        controller_fqdn=$(yq -r ".nodes.controllers[$i].fqdn" configs/hosts.yaml)
         
-        # Добавляем контроллер в known_hosts
-        echo "Adding $controller_fqdn to known_hosts..."
+        # Add controller to known_hosts
+        echo -e "${BLUE}Adding $controller_fqdn to known_hosts...${RESET}"
         ssh-keyscan -H "$controller_fqdn" >> "/home/$USERNAME/.ssh/known_hosts" 2>/dev/null
         
-        # Рассылаем SSH-ключ на контроллер
-        echo "Distributing SSH key to $controller_fqdn..."
+        # Distribute SSH key to the controller
+        echo -e "${BLUE}Distributing SSH key to $controller_fqdn...${RESET}"
         sshpass -p "$SUDO_PASSWORD" ssh-copy-id -i "/home/$USERNAME/.ssh/id_rsa.pub" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$USERNAME@$controller_ip" &> /dev/null
         
         if [ $? -eq 0 ]; then
-            echo "SSH key successfully copied to $controller_fqdn."
+            echo -e "${GREEN}SSH key successfully copied to $controller_fqdn.${RESET}"
         else
-            echo "Failed to copy SSH key to $controller_fqdn."
+            echo -e "${RED}Failed to copy SSH key to $controller_fqdn.${RESET}"
         fi
     done
 
-    for i in $(seq 1 $WORKER_COUNT); do
-        worker_ip=$(yq -r ".nodes.workers[$i-1].ip" configs/hosts.yaml)
-        worker_fqdn=$(yq -r ".nodes.workers[$i-1].fqdn" configs/hosts.yaml)
+    # Read information from hosts.yaml and distribute keys to each worker
+    for i in $(seq 0 $(($WORKER_COUNT - 1))); do
+        worker_ip=$(yq -r ".nodes.workers[$i].ip" configs/hosts.yaml)
+        worker_fqdn=$(yq -r ".nodes.workers[$i].fqdn" configs/hosts.yaml)
         
-        # Добавляем воркер в known_hosts
-        echo "Adding $worker_fqdn to known_hosts..."
+        # Add worker to known_hosts
+        echo -e "${BLUE}Adding $worker_fqdn to known_hosts...${RESET}"
         ssh-keyscan -H "$worker_fqdn" >> "/home/$USERNAME/.ssh/known_hosts" 2>/dev/null
         
-        # Рассылаем SSH-ключ на воркер
-        echo "Distributing SSH key to $worker_fqdn..."
+        # Distribute SSH key to the worker
+        echo -e "${BLUE}Distributing SSH key to $worker_fqdn...${RESET}"
         sshpass -p "$SUDO_PASSWORD" ssh-copy-id -i "/home/$USERNAME/.ssh/id_rsa.pub" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$USERNAME@$worker_ip" &> /dev/null
         
         if [ $? -eq 0 ]; then
-            echo "SSH key successfully copied to $worker_fqdn."
+            echo -e "${GREEN}SSH key successfully copied to $worker_fqdn.${RESET}"
         else
-            echo "Failed to copy SSH key to $worker_fqdn."
+            echo -e "${RED}Failed to copy SSH key to $worker_fqdn.${RESET}"
         fi
     done
 }
 
-function generate_common_certs {
+
+# Function to generate common certificates for Kubernetes components
+function generate_common_certs() {
     # Create the directory for storing keys if it doesn't exist
     mkdir -p keys
 
     components=("admin" "kube-proxy" "kube-scheduler" "kube-controller-manager" "kube-api-server" "service-accounts")
     for component in "${components[@]}"; do
-        echo "Generating certificate for component: $component"
+        echo -e "${BLUE}Generating certificate for component: $component${RESET}"
 
-        # Generate private key
+        # Generate a private key
         openssl genpkey -algorithm RSA -out "keys/${component}.key" &> /dev/null
 
-        # Generate certificate signing request (CSR)
+        # Generate a certificate signing request (CSR)
         openssl req -new \
             -key "keys/${component}.key" \
             -sha256 \
@@ -470,23 +469,22 @@ function generate_common_certs {
             -CAcreateserial \
             -out "keys/${component}.crt" &> /dev/null
 
-        echo "Certificate generated: keys/${component}.crt"
-        echo "--------------------------------------------"
+        echo -e "${GREEN}Certificate generated: keys/${component}.crt${RESET}"
+        echo -e "${CYAN}--------------------------------------------${RESET}"
     done
 }
 
-
+# Function to generate certificates for worker nodes
 function generate_worker_certificates() {
-    for i in $(seq 1 "$WORKER_COUNT"); do
-        local INDEX=$((i - 1))
-        local HOSTNAME=$(yq -r ".nodes.workers[$INDEX].hostname" configs/hosts.yaml)
+    for i in $(seq 0 $(($WORKER_COUNT - 1))); do
+        local HOSTNAME=$(yq -r ".nodes.workers[$i].hostname" configs/hosts.yaml)
 
-        echo "Generating certificate for $HOSTNAME..."
+        echo -e "${BLUE}Generating certificate for $HOSTNAME...${RESET}"
 
-        # Generate private key
+        # Generate a private key
         openssl genpkey -algorithm RSA -out "keys/${HOSTNAME}.key" &> /dev/null
 
-        # Generate certificate signing request (CSR)
+        # Generate a certificate signing request (CSR)
         openssl req -new \
             -key "keys/${HOSTNAME}.key" \
             -sha256 \
@@ -505,17 +503,18 @@ function generate_worker_certificates() {
             -CAcreateserial \
             -out "keys/${HOSTNAME}.crt" &> /dev/null
 
-        echo "Certificate generated: keys/${HOSTNAME}.crt"
-        echo "--------------------------------------------"
+        echo -e "${GREEN}Certificate generated: keys/${HOSTNAME}.crt${RESET}"
+        echo -e "${CYAN}--------------------------------------------${RESET}"
     done
 }
 
+# Function to distribute all certificates to controllers and workers
 function distribute_all_certs() {
-    # Distribute to controllers
+    # Distribute certificates to controllers
     for i in $(seq 1 "$CONTROLLER_COUNT"); do
         CONTROLLER_HOSTNAME=$(yq -r ".nodes.controllers[$((i - 1))].hostname" configs/hosts.yaml)
         
-        echo "Distributing certificates to $CONTROLLER_HOSTNAME..."
+        echo -e "${BLUE}Distributing certificates to $CONTROLLER_HOSTNAME...${RESET}"
 
         sshpass -p "$SUDO_PASSWORD" ssh -o StrictHostKeyChecking=no "$USERNAME@$CONTROLLER_HOSTNAME" \
             "echo $SUDO_PASSWORD | sudo -S mkdir -p /var/lib/kubelet/"
@@ -525,15 +524,15 @@ function distribute_all_certs() {
             keys/service-accounts.crt keys/service-accounts.key \
             "$USERNAME@$CONTROLLER_HOSTNAME:/home/$USERNAME/"
 
-        echo "Certificates distributed to $CONTROLLER_HOSTNAME."
-        echo "--------------------------------------------"
+        echo -e "${GREEN}Certificates distributed to $CONTROLLER_HOSTNAME.${RESET}"
+        echo -e "${CYAN}--------------------------------------------${RESET}"
     done
 
-    # Distribute to workers
+    # Distribute certificates to workers
     for i in $(seq 1 "$WORKER_COUNT"); do
         WORKER_HOSTNAME=$(yq -r ".nodes.workers[$((i - 1))].hostname" configs/hosts.yaml)
 
-        echo "Distributing certificates to $WORKER_HOSTNAME..."
+        echo -e "${BLUE}Distributing certificates to $WORKER_HOSTNAME...${RESET}"
 
         sshpass -p "$SUDO_PASSWORD" ssh -o StrictHostKeyChecking=no "$USERNAME@$WORKER_HOSTNAME" \
             "echo $SUDO_PASSWORD | sudo -S mkdir -p /var/lib/kubelet/"
@@ -551,50 +550,55 @@ function distribute_all_certs() {
         sshpass -p "$SUDO_PASSWORD" ssh "$USERNAME@$WORKER_HOSTNAME" \
             "echo $SUDO_PASSWORD | sudo -S mv /tmp/${WORKER_HOSTNAME}.key /var/lib/kubelet/kubelet.key"
 
-        echo "Certificates distributed to $WORKER_HOSTNAME."
-        echo "--------------------------------------------"
+        echo -e "${GREEN}Certificates distributed to $WORKER_HOSTNAME.${RESET}"
+        echo -e "${CYAN}--------------------------------------------${RESET}"
     done
 }
 
+# Function to set up worker nodes
 function setup_nodes() {
-    for i in $(seq 1 "$WORKER_COUNT"); do
-        WORKER_HOSTNAME=$(yq -r ".nodes.workers[$((i - 1))].hostname" configs/hosts.yaml)
+    for i in $(seq 0 $(($WORKER_COUNT - 1))); do
+        WORKER_HOSTNAME=$(yq -r ".nodes.workers[$i].hostname" configs/hosts.yaml)
 
-        echo "Setting up node: $WORKER_HOSTNAME"
+        echo -e "${BLUE}Setting up node: $WORKER_HOSTNAME${RESET}"
 
         ssh "$USERNAME@$WORKER_HOSTNAME" "echo '$SUDO_PASSWORD' | sudo -S bash -c '
             mkdir -p /etc/cni/net.d /opt/cni/bin /var/lib/kubelet /var/lib/kube-proxy /var/lib/kubernetes /var/run/kubernetes &&
-            mkdir -p containerd && 
-            tar -xvf crictl.tar.gz && 
-            tar -xvf containerd.tar.gz -C containerd && 
-            tar -xvf cni-plugins.tgz -C /opt/cni/bin/ && 
-            chmod +x crictl kubectl kube-proxy kubelet runc && 
-            mv crictl kubectl kube-proxy kubelet runc /usr/local/bin/ && 
+            mkdir -p containerd &&
+            tar -xvf crictl.tar.gz &&
+            tar -xvf containerd.tar.gz -C containerd &&
+            tar -xvf cni-plugins.tgz -C /opt/cni/bin/ &&
+            chmod +x crictl kubectl kube-proxy kubelet runc &&
+            mv crictl kubectl kube-proxy kubelet runc /usr/local/bin/ &&
             mv containerd/bin/* /bin/ &&
             mv 10-bridge.conf 99-loopback.conf /etc/cni/net.d/ &&
-            mkdir -p /etc/containerd/ && 
-            mv containerd-config.toml /etc/containerd/config.toml && 
+            mkdir -p /etc/containerd/ &&
+            mv containerd-config.toml /etc/containerd/config.toml &&
             mv containerd.service /etc/systemd/system/ &&
-            mv kubelet-config.yaml /var/lib/kubelet/ && 
+            mv kubelet-config.yaml /var/lib/kubelet/ &&
             mv kubelet.service /etc/systemd/system/ &&
-            mv kube-proxy-config.yaml /var/lib/kube-proxy/ && 
+            mv kube-proxy-config.yaml /var/lib/kube-proxy/ &&
             mv kube-proxy.service /etc/systemd/system/ &&
-            systemctl daemon-reload && 
-            systemctl enable containerd kubelet kube-proxy && 
+            systemctl daemon-reload &&
+            systemctl enable containerd kubelet kube-proxy &&
             systemctl start containerd kubelet kube-proxy
         '"
+
+        echo -e "${GREEN}Node setup completed for $WORKER_HOSTNAME.${RESET}"
     done
 }
 
+# Function to generate and distribute the encryption configuration
 function generate_and_copy_encryption_config() {
     echo -e "${CYAN}Generating and distributing encryption config...${RESET}"
 
-    # Генерация ключа
+    # Generate encryption key
     export ENCRYPTION_KEY=$(head -c 32 /dev/urandom | base64)
     envsubst < configs/encryption-config.yaml > encryption-config.yaml
 
-    for i in $(seq 1 "$CONTROLLER_COUNT"); do
-        CONTROLLER_HOSTNAME=$(yq -r ".nodes.controllers[$((i - 1))].hostname" configs/hosts.yaml)
+    # Copy encryption config to all controllers
+    for i in $(seq 0 $(($CONTROLLER_COUNT - 1))); do
+        CONTROLLER_HOSTNAME=$(yq -r ".nodes.controllers[$i].hostname" configs/hosts.yaml)
 
         echo -e "${BLUE}Copying encryption config to $CONTROLLER_HOSTNAME...${RESET}"
         scp -o StrictHostKeyChecking=no encryption-config.yaml "$USERNAME@$CONTROLLER_HOSTNAME:/home/$USERNAME/" &> /dev/null
@@ -607,14 +611,13 @@ function generate_and_copy_encryption_config() {
     done
 }
 
-
-# Функция для генерации kubeconfig для воркеров
+# Function to generate kubeconfigs for worker nodes
 function generate_k8s_worker_configs() {
     echo -e "${BLUE}Generating kubeconfigs for workers...${RESET}"
 
     for i in $(seq 0 $(($WORKER_COUNT - 1))); do
         local WORKER_HOSTNAME=$(yq -r ".nodes.workers[$i].hostname" configs/hosts.yaml)
-        local SERVER_URL="https://$(yq -r '.nodes.controllers[0].fqdn' configs/hosts.yaml):6443"
+        local SERVER_URL="https://${CONTROLLER_0_IPV4}:6443"
 
         echo -e "${CYAN}Generating kubeconfig for worker: $WORKER_HOSTNAME...${RESET}"
 
@@ -642,12 +645,11 @@ function generate_k8s_worker_configs() {
     done
 }
 
-
-# Функция для генерации kubeconfig для контроллеров
+# Function to generate kubeconfigs for controller components
 function generate_k8s_controller_configs() {
     echo -e "${BLUE}Generating kubeconfigs for controller components...${RESET}"
 
-    local SERVER_URL="https://$(yq -r '.nodes.controllers[0].fqdn' configs/hosts.yaml):6443"
+    local SERVER_URL="https://${CONTROLLER_0_IPV4}:6443"
 
     # kube-proxy
     echo -e "${CYAN}Generating kube-proxy kubeconfig...${RESET}"
@@ -740,6 +742,7 @@ function generate_k8s_controller_configs() {
     echo -e "${GREEN}Controller kubeconfigs created successfully.${RESET}"
 }
 
+# Function to distribute kubeconfigs to worker nodes
 function distribute_kube_configs_to_workers() {
     echo -e "${BLUE}Distributing kubeconfigs to worker nodes...${RESET}"
 
@@ -748,14 +751,14 @@ function distribute_kube_configs_to_workers() {
 
         echo -e "${CYAN}Copying configs to $WORKER_HOSTNAME...${RESET}"
 
-        # Создание директорий с sudo через sshpass
+        # Create required directories on the worker node using sudo
         echo "$SUDO_PASSWORD" | sshpass -p "$SUDO_PASSWORD" ssh -o StrictHostKeyChecking=no "$USERNAME@$WORKER_HOSTNAME" "sudo -S mkdir -p /var/lib/{kubelet,kube-proxy}"
 
-        # Копирование kubeconfig файлов
+        # Copy kubeconfig files
         scp -o StrictHostKeyChecking=no configs/kube-proxy.kubeconfig "$USERNAME@$WORKER_HOSTNAME:/tmp/kube-proxy.kubeconfig"
         scp -o StrictHostKeyChecking=no configs/${WORKER_HOSTNAME}.kubeconfig "$USERNAME@$WORKER_HOSTNAME:/tmp/kubelet.kubeconfig"
 
-        # Перемещение файлов с sudo через sshpass
+        # Move files to their destinations with sudo
         echo "$SUDO_PASSWORD" | sshpass -p "$SUDO_PASSWORD" ssh -o StrictHostKeyChecking=no "$USERNAME@$WORKER_HOSTNAME" "sudo -S mv /tmp/kube-proxy.kubeconfig /var/lib/kube-proxy/kubeconfig"
         echo "$SUDO_PASSWORD" | sshpass -p "$SUDO_PASSWORD" ssh -o StrictHostKeyChecking=no "$USERNAME@$WORKER_HOSTNAME" "sudo -S mv /tmp/kubelet.kubeconfig /var/lib/kubelet/kubeconfig"
 
@@ -763,6 +766,7 @@ function distribute_kube_configs_to_workers() {
     done
 }
 
+# Function to distribute kubeconfigs to controller nodes
 function distribute_kube_configs_to_controllers() {
     echo -e "${BLUE}Distributing kubeconfigs to controller nodes...${RESET}"
 
@@ -771,7 +775,7 @@ function distribute_kube_configs_to_controllers() {
 
         echo -e "${CYAN}Copying configs to $CONTROLLER_HOSTNAME...${RESET}"
 
-        # Копирование файлов через scp
+        # Copy kubeconfig files using scp
         scp -o StrictHostKeyChecking=no configs/admin.kubeconfig \
             configs/kube-controller-manager.kubeconfig \
             configs/kube-scheduler.kubeconfig \
@@ -781,13 +785,14 @@ function distribute_kube_configs_to_controllers() {
     done
 }
 
+# Function to generate and distribute the encryption-config.yaml file
 function generate_and_distribute_encryption_config() {
     echo -e "${BLUE}Generating encryption-config.yaml...${RESET}"
 
-    # Генерируем ключ
+    # Generate encryption key
     export ENCRYPTION_KEY=$(head -c 32 /dev/urandom | base64)
 
-    # Генерируем файл на основе preconfigs/encryption-config.yaml
+    # Generate the encryption config file from template
     envsubst < preconfigs/encryption-config.yaml > configs/encryption-config.yaml
 
     echo -e "${GREEN}Encryption config generated successfully and saved to configs/encryption-config.yaml.${RESET}"
@@ -799,10 +804,10 @@ function generate_and_distribute_encryption_config() {
 
         echo -e "${CYAN}Copying encryption config to $CONTROLLER_HOSTNAME...${RESET}"
 
-        # Копируем файл на удаленный сервер
+        # Copy the encryption config file to the remote controller node
         sshpass -p "$SUDO_PASSWORD" scp -o StrictHostKeyChecking=no configs/encryption-config.yaml "$USERNAME@$CONTROLLER_HOSTNAME:/tmp/encryption-config.yaml"
 
-        # Создаем нужную папку и перемещаем файл
+        # Create the necessary directory and move the file
         sshpass -p "$SUDO_PASSWORD" ssh -o StrictHostKeyChecking=no "$USERNAME@$CONTROLLER_HOSTNAME" "echo '$SUDO_PASSWORD' | sudo -S bash -c '
             mkdir -p /var/lib/kubernetes/
             mv /tmp/encryption-config.yaml /var/lib/kubernetes/encryption-config.yaml
@@ -812,6 +817,7 @@ function generate_and_distribute_encryption_config() {
     done
 }
 
+# Function to install and configure etcd on all controller nodes
 function setup_etcd() {
     echo -e "${BLUE}Installing etcd on all controllers...${RESET}"
 
@@ -821,7 +827,7 @@ function setup_etcd() {
 
         echo -e "${CYAN}Installing etcd on $CONTROLLER_HOSTNAME...${RESET}"
 
-        # Подготавливаем переменные окружения
+        # Prepare environment variables
         export HOSTNAME="$CONTROLLER_HOSTNAME"
         export CONTROLLER_IP="$CONTROLLER_IP"
         if [ "$SYSTEM_ARCH" = "amd64" ]; then
@@ -830,13 +836,13 @@ function setup_etcd() {
             export ETCD_UNSUPPORTED_ARCH="$SYSTEM_ARCH"
         fi
 
-        # Генерируем уникальный сервисный файл
+        # Generate a unique systemd service file for each controller
         envsubst < preconfigs/units/etcd.service > configs/units/etcd-$CONTROLLER_HOSTNAME.service
 
-        # Копируем архив и сервисный файл
+        # Copy etcd archive and systemd service file to the controller
         sshpass -p "$SUDO_PASSWORD" scp -o StrictHostKeyChecking=no downloads/etcd.tar.gz configs/units/etcd-$CONTROLLER_HOSTNAME.service "$USERNAME@$CONTROLLER_HOSTNAME:/home/$USERNAME/"
         
-        # Выполняем установку и настройку
+        # Perform installation and configuration
         sshpass -p "$SUDO_PASSWORD" ssh -o StrictHostKeyChecking=no "$USERNAME@$CONTROLLER_HOSTNAME" "echo '$SUDO_PASSWORD' | sudo -S bash -c '
             mkdir -p /etc/etcd /var/lib/etcd
             chmod 700 /var/lib/etcd
@@ -852,7 +858,6 @@ function setup_etcd() {
 
             systemctl daemon-reload
             systemctl enable etcd
-
             systemctl start etcd
             sleep 10
         '"
@@ -861,11 +866,11 @@ function setup_etcd() {
     done
 }
 
-
+# Function to set up Kubernetes master components on all controller nodes
 function setup_kubernetes_master() {
     echo -e "${BLUE}Setting up Kubernetes master components on all controllers...${RESET}"
 
-    local SERVER_URL="https://$(yq -r '.nodes.controllers[0].fqdn' configs/hosts.yaml):6443"
+    local SERVER_URL="https://${CONTROLLER_0_IPV4}:6443"
 
     for i in $(seq 0 $(($CONTROLLER_COUNT - 1))); do
         local CONTROLLER_HOSTNAME=$(yq -r ".nodes.controllers[$i].hostname" configs/hosts.yaml)
@@ -873,18 +878,18 @@ function setup_kubernetes_master() {
 
         echo -e "${CYAN}Setting up Kubernetes master on $CONTROLLER_HOSTNAME...${RESET}"
 
-        # Экспортируем переменные для шаблонов
+        # Export environment variables for templates
         export CONTROLLER_IP
         export SERVER_URL
         export BASE_WORKER_SUBNET
         export CLUSTER_IP_RANGE
 
-        # Генерируем уникальные файлы для конкретного контроллера
+        # Generate unique systemd unit files for each controller
         envsubst < preconfigs/units/kube-apiserver.service > configs/units/kube-apiserver-$CONTROLLER_HOSTNAME.service
         envsubst < preconfigs/units/kube-controller-manager.service > configs/units/kube-controller-manager-$CONTROLLER_HOSTNAME.service
-        cp preconfigs/units/kube-scheduler.service configs/units/kube-scheduler.service # kube-scheduler одинаков для всех!
+        cp preconfigs/units/kube-scheduler.service configs/units/kube-scheduler.service  # kube-scheduler is the same for all controllers
 
-        # Копируем бинарники и сконфигурированные юниты
+        # Copy binaries and configured unit files to the controller
         sshpass -p "$SUDO_PASSWORD" scp -o StrictHostKeyChecking=no \
             downloads/kube-apiserver \
             downloads/kube-controller-manager \
@@ -898,7 +903,7 @@ function setup_kubernetes_master() {
             configs/encryption-config.yaml \
             "$USERNAME@$CONTROLLER_IP:/home/$USERNAME/"
 
-        # Выполняем установку на контроллере
+        # Perform installation and configuration on the controller
         sshpass -p "$SUDO_PASSWORD" ssh -o StrictHostKeyChecking=no "$USERNAME@$CONTROLLER_HOSTNAME" "echo '$SUDO_PASSWORD' | sudo -S bash -c '
             mkdir -p /etc/kubernetes/config /var/lib/kubernetes
 
@@ -927,10 +932,11 @@ function setup_kubernetes_master() {
         '"
 
         echo -e "${GREEN}Kubernetes master setup completed on $CONTROLLER_HOSTNAME.${RESET}"
-
     done
 }
 
+
+# Function to generate configuration files from templates
 function generate_configs_from_templates() {
     echo -e "${BLUE}Generating configs from templates...${RESET}"
 
@@ -950,16 +956,17 @@ function generate_configs_from_templates() {
     echo -e "${GREEN}All configs generated successfully into configs/.${RESET}"
 }
 
+# Function to set up static routes between nodes
 function setup_routes() {
     echo -e "${BLUE}Setting up static routes between nodes...${RESET}"
 
-    # Получаем IP и Hostname всех контроллеров
+    # Get IPs of all controllers
     CONTROLLER_IPS=()
     for i in $(seq 0 $(($CONTROLLER_COUNT - 1))); do
         CONTROLLER_IPS+=("$(yq -r ".nodes.controllers[$i].ip" configs/hosts.yaml)")
     done
 
-    # Получаем IP и SUBNET всех воркеров
+    # Get IPs and subnets of all worker nodes
     NODE_IPS=()
     NODE_SUBNETS=()
     for i in $(seq 0 $(($WORKER_COUNT - 1))); do
@@ -967,7 +974,7 @@ function setup_routes() {
         NODE_SUBNETS+=("$(yq -r ".nodes.workers[$i].subnet" configs/hosts.yaml)")
     done
 
-    # Добавляем маршруты на всех контроллерах
+    # Add routes on all controllers
     for SERVER_IP in "${CONTROLLER_IPS[@]}"; do
         echo -e "${CYAN}Adding routes on controller ($SERVER_IP)...${RESET}"
         for i in "${!NODE_IPS[@]}"; do
@@ -976,7 +983,7 @@ function setup_routes() {
         done
     done
 
-    # Добавляем маршруты между воркерами
+    # Add routes between workers
     for i in "${!NODE_IPS[@]}"; do
         NODE_IP=${NODE_IPS[$i]}
         NODE_SUBNET=${NODE_SUBNETS[$i]}
@@ -994,29 +1001,26 @@ function setup_routes() {
     echo -e "${GREEN}Static routes successfully configured on all controllers and workers.${RESET}"
 }
 
+# Function to prepare worker nodes before Kubernetes components installation
 function prepare_nodes() {
     echo -e "${BLUE}Preparing worker nodes...${RESET}"
 
     for i in $(seq 0 $(($WORKER_COUNT - 1))); do
         local WORKER_HOSTNAME=$(yq -r ".nodes.workers[$i].hostname" configs/hosts.yaml)
-        local SUBNET=$(yq -r ".nodes.workers[$i].subnet" configs/hosts.yaml)
 
-        echo -e "${CYAN}Preparing $WORKER_HOSTNAME with subnet $SUBNET...${RESET}"
+        echo -e "${CYAN}Preparing $WORKER_HOSTNAME...${RESET}"
 
-        # Экспортируем переменные для envsubst
-        export SUBNET
-
-        # Патчим конфиги специально под воркера
+        # Generate specific configs for each worker node
         envsubst < preconfigs/10-bridge.conf > configs/10-bridge-$WORKER_HOSTNAME.conf
         envsubst < preconfigs/kubelet-config.yaml > configs/kubelet-config-$WORKER_HOSTNAME.yaml
 
-        # Копируем конфиги и файлы на воркер
+        # Copy generated configs to the worker node
         sshpass -p "$SUDO_PASSWORD" scp -o StrictHostKeyChecking=no \
             configs/10-bridge-$WORKER_HOSTNAME.conf \
             configs/kubelet-config-$WORKER_HOSTNAME.yaml \
             "$USERNAME@$WORKER_HOSTNAME:/home/$USERNAME/"
 
-        # Копируем бинарники и статичные конфиги
+        # Copy binaries and static configs to the worker node
         sshpass -p "$SUDO_PASSWORD" scp -o StrictHostKeyChecking=no \
             downloads/runc \
             downloads/crictl.tar.gz \
@@ -1029,19 +1033,12 @@ function prepare_nodes() {
             configs/containerd-config.toml \
             configs/kube-proxy-config.yaml \
             configs/kubelet-config.yaml \
-            configs/kube-proxy-config.yaml \
-            configs/kubelet-config.yaml \
-            configs/kube-proxy-config.yaml \
-            configs/kube-proxy-config.yaml \
-            configs/kubelet-config.yaml \
-            configs/kube-proxy-config.yaml \
-            configs/kubelet-config.yaml \
             configs/units/containerd.service \
             configs/units/kubelet.service \
             configs/units/kube-proxy.service \
             "$USERNAME@$WORKER_HOSTNAME:/home/$USERNAME/"
 
-        # Подготовка системы
+        # System preparation on the worker node
         sshpass -p "$SUDO_PASSWORD" ssh -o StrictHostKeyChecking=no "$USERNAME@$WORKER_HOSTNAME" "echo '$SUDO_PASSWORD' | sudo -S bash -c '
             apt-get update
             apt-get install -y socat conntrack ipset
@@ -1053,6 +1050,7 @@ function prepare_nodes() {
     done
 }
 
+# Function to configure and set up worker nodes
 function setup_nodes() {
     echo -e "${BLUE}Configuring worker nodes...${RESET}"
 
@@ -1095,46 +1093,184 @@ function setup_nodes() {
     done
 }
 
+# Function to configure local kubectl context
 function configure_kubectl() {
-  echo -e "${BLUE}Configuring local kubectl context...${RESET}"
+    echo -e "${BLUE}Configuring local kubectl context...${RESET}"
 
-  local SERVER_URL="https://$(yq -r '.nodes.controllers[0].fqdn' configs/hosts.yaml):6443"
+    local SERVER_URL="https://${CONTROLLER_0_IPV4}:6443"
 
-  kubectl config set-cluster kubernetes-the-hard-way \
-    --certificate-authority=keys/ca.crt \
-    --embed-certs=true \
-    --server="$SERVER_URL"
+    kubectl config set-cluster kubernetes-the-hard-way \
+        --certificate-authority=keys/ca.crt \
+        --embed-certs=true \
+        --server="$SERVER_URL"
 
-  kubectl config set-credentials admin \
-    --client-certificate=keys/admin.crt \
-    --client-key=keys/admin.key
+    kubectl config set-credentials admin \
+        --client-certificate=keys/admin.crt \
+        --client-key=keys/admin.key
 
-  kubectl config set-context kubernetes-the-hard-way \
-    --cluster=kubernetes-the-hard-way \
-    --user=admin
+    kubectl config set-context kubernetes-the-hard-way \
+        --cluster=kubernetes-the-hard-way \
+        --user=admin
 
-  kubectl config use-context kubernetes-the-hard-way
+    kubectl config use-context kubernetes-the-hard-way
 
-  echo -e "${GREEN}kubectl configured to access the cluster via $SERVER_URL${RESET}"
+    echo -e "${GREEN}kubectl configured to access the cluster via $SERVER_URL${RESET}"
 }
 
 function install_metallb() {
     echo -e "${BLUE}Installing MetalLB...${RESET}"
 
     local METALLB_MANIFEST="downloads/metallb.yaml"
+    local METALLB_POOL_CONFIG="configs/metallb-address-pool.yaml"
+    local METALLB_WEBHOOK_PATCH="configs/webhook-patch.yaml"
+    local METALLB_SERVICE_PATCH="configs/metallb-webhook-service-patch.yaml"
 
     if [ ! -f "$METALLB_MANIFEST" ]; then
         echo -e "${RED}MetalLB manifest not found at $METALLB_MANIFEST. Please check downloads.${RESET}"
         exit 1
     fi
 
-    # Создаем namespace для metallb (если еще нет)
+    if [ ! -f "$METALLB_POOL_CONFIG" ]; then
+        echo -e "${RED}MetalLB IP address pool config not found at $METALLB_POOL_CONFIG. Please generate configs before proceeding.${RESET}"
+        exit 1
+    fi
+
+    if [ ! -f "$METALLB_WEBHOOK_PATCH" ]; then
+        echo -e "${RED}MetalLB webhook patch not found at $METALLB_WEBHOOK_PATCH. Please generate configs before proceeding.${RESET}"
+        exit 1
+    fi
+
+    if [ ! -f "$METALLB_SERVICE_PATCH" ]; then
+        echo -e "${RED}MetalLB webhook service patch not found at $METALLB_SERVICE_PATCH. Please generate configs before proceeding.${RESET}"
+        exit 1
+    fi
+
+    # Create namespace for MetalLB if it doesn't exist
     kubectl create namespace metallb-system --dry-run=client -o yaml | kubectl apply -f -
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Failed to create or apply namespace metallb-system.${RESET}"
+        exit 1
+    fi
 
-    # Применяем MetalLB манифест
-    kubectl apply -f "$METALLB_MANIFEST"
+    # Apply the MetalLB deployment manifest
+    echo -e "${CYAN}Applying MetalLB deployment manifest...${RESET}"
+    if ! kubectl apply -f "$METALLB_MANIFEST"; then
+        echo -e "${RED}Failed to apply MetalLB manifest.${RESET}"
+        exit 1
+    fi
 
-    echo -e "${GREEN}MetalLB installed successfully.${RESET}"
+    # Patch the MetalLB controller to fix webhook listen address
+    echo -e "${CYAN}Patching MetalLB controller deployment to fix webhook listening address...${RESET}"
+    kubectl patch deployment controller -n metallb-system --type='json' -p='[
+    {
+        "op": "add",
+        "path": "/spec/template/spec/containers/0/args/-",
+        "value": "--webhook-host=0.0.0.0"
+    }
+    ]'
+
+    # Wait for MetalLB controller to be available
+    echo -e "${CYAN}Waiting for MetalLB controller to be ready...${RESET}"
+    kubectl wait --namespace metallb-system --for=condition=available --timeout=120s deployment/controller
+
+
+    # Wait until at least one speaker pod exists
+    echo -e "${CYAN}Waiting for MetalLB speaker pods to appear...${RESET}"
+    until [ "$(kubectl get pods -n metallb-system -l component=speaker --no-headers 2>/dev/null | wc -l)" -gt 0 ]; do
+        echo -e "${YELLOW}Waiting for speaker pods to appear...${RESET}"
+        sleep 2
+    done
+
+    # Wait for speaker pods to be ready
+    echo -e "${CYAN}Waiting for MetalLB speaker pods to be ready...${RESET}"
+    kubectl wait --namespace metallb-system --for=condition=Ready pod -l component=speaker --timeout=120s
+
+    # Wait until the webhook endpoint is ready
+    echo -e "${CYAN}Waiting for MetalLB webhook endpoint to be ready...${RESET}"
+    for i in {1..30}; do
+        if kubectl get endpoints metallb-webhook-service -n metallb-system -o jsonpath='{.subsets[*].ports[*].port}' 2>/dev/null | grep -q 9443; then
+            echo -e "${GREEN}Webhook endpoint is ready.${RESET}"
+            break
+        else
+            echo -e "${YELLOW}Waiting for webhook endpoint on port 9443... (${i}/30)${RESET}"
+            sleep 2
+        fi
+        if [ $i -eq 30 ]; then
+            echo -e "${RED}Timeout waiting for webhook endpoint. Exiting.${RESET}"
+            exit 1
+        fi
+    done
+
+    # Apply the webhook service patch to expose port 9443 correctly
+    echo -e "${CYAN}Patching MetalLB webhook service...${RESET}"
+    if ! kubectl apply -f "$METALLB_SERVICE_PATCH"; then
+        echo -e "${RED}Failed to apply MetalLB webhook service patch.${RESET}"
+        exit 1
+    fi
+
+    # Apply the webhook configuration patch to correct port
+    echo -e "${CYAN}Patching MetalLB webhook configuration...${RESET}"
+    if ! kubectl apply -f "$METALLB_WEBHOOK_PATCH"; then
+        echo -e "${RED}Failed to apply MetalLB webhook patch.${RESET}"
+        exit 1
+    fi
+
+    # Apply the generated IPAddressPool
+    echo -e "${CYAN}Applying MetalLB IP address pool...${RESET}"
+    if ! kubectl apply -f "$METALLB_POOL_CONFIG"; then
+        echo -e "${RED}Failed to apply MetalLB IP address pool.${RESET}"
+        exit 1
+    fi
+
+    echo -e "${GREEN}MetalLB installed and configured successfully.${RESET}"
+}
+
+
+# Function to apply LoadBalancer service for kube-apiserver and reconfigure kubectl
+function setup_apiserver_loadbalancer() {
+    echo -e "${BLUE}Setting up Kubernetes API server LoadBalancer service...${RESET}"
+
+    local APISERVER_LB_CONFIG="configs/kube-apiserver-lb.yaml"
+
+    if [ ! -f "$APISERVER_LB_CONFIG" ]; then
+        echo -e "${RED}Generated kube-apiserver-lb.yaml not found at $APISERVER_LB_CONFIG. Please run generate_configs_from_templates first.${RESET}"
+        exit 1
+    fi
+
+    # Apply the LoadBalancer service
+    echo -e "${CYAN}Applying LoadBalancer service...${RESET}"
+    if ! kubectl apply -f "$APISERVER_LB_CONFIG"; then
+        echo -e "${RED}Failed to apply kube-apiserver LoadBalancer service.${RESET}"
+        exit 1
+    fi
+
+    # Wait for the LoadBalancer service to receive an external IP
+    echo -e "${CYAN}Waiting for LoadBalancer external IP to be assigned...${RESET}"
+    for i in {1..30}; do
+        external_ip=$(kubectl get svc kube-apiserver-lb -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+        if [ -n "$external_ip" ]; then
+            echo -e "${GREEN}LoadBalancer external IP assigned: $external_ip${RESET}"
+            break
+        fi
+        echo -e "${YELLOW}Waiting for external IP... ($i/30)${RESET}"
+        sleep 2
+    done
+
+    if [ -z "$external_ip" ]; then
+        echo -e "${RED}Failed to get external IP for kube-apiserver LoadBalancer.${RESET}"
+        exit 1
+    fi
+
+    # Reconfigure kubectl to use the new external IP
+    echo -e "${CYAN}Reconfiguring kubectl to use LoadBalancer IP...${RESET}"
+    kubectl config set-cluster kubernetes-the-hard-way \
+        --certificate-authority=keys/ca.crt \
+        --embed-certs=true \
+        --server=https://${external_ip}:6443
+
+    kubectl config use-context kubernetes-the-hard-way
+
+    echo -e "${GREEN}kubectl is now configured to use the API server via LoadBalancer (${external_ip}).${RESET}"
 }
 
 
@@ -1142,10 +1278,10 @@ check_os
 get_architecture
 generate_configs_from_templates
 check_required_packages
-install_kubectl
 display_welcome
 get_credentials
 download_files
+install_kubectl
 generate_machines_list
 check_availability
 generate_etchosts
@@ -1170,3 +1306,4 @@ prepare_nodes
 setup_nodes
 configure_kubectl
 install_metallb
+setup_apiserver_loadbalancer

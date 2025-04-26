@@ -1,0 +1,107 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: metallb-webhook-configuration
+webhooks:
+  - name: bgppeersvalidationwebhook.metallb.io
+    matchPolicy: Equivalent
+    failurePolicy: Fail
+    sideEffects: None
+    admissionReviewVersions: ["v1"]
+    clientConfig:
+      service:
+        name: metallb-webhook-service
+        namespace: metallb-system
+        path: /validate-metallb-io-v1beta2-bgppeer
+        port: 9443
+    rules:
+      - apiGroups: ["metallb.io"]
+        apiVersions: ["v1beta2"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["bgppeers"]
+        scope: "*"
+  - name: bfdprofilevalidationwebhook.metallb.io
+    matchPolicy: Equivalent
+    failurePolicy: Fail
+    sideEffects: None
+    admissionReviewVersions: ["v1"]
+    clientConfig:
+      service:
+        name: metallb-webhook-service
+        namespace: metallb-system
+        path: /validate-metallb-io-v1beta1-bfdprofile
+        port: 9443
+    rules:
+      - apiGroups: ["metallb.io"]
+        apiVersions: ["v1beta1"]
+        operations: ["CREATE", "DELETE"]
+        resources: ["bfdprofiles"]
+        scope: "*"
+  - name: bgpadvertisementvalidationwebhook.metallb.io
+    matchPolicy: Equivalent
+    failurePolicy: Fail
+    sideEffects: None
+    admissionReviewVersions: ["v1"]
+    clientConfig:
+      service:
+        name: metallb-webhook-service
+        namespace: metallb-system
+        path: /validate-metallb-io-v1beta1-bgpadvertisement
+        port: 9443
+    rules:
+      - apiGroups: ["metallb.io"]
+        apiVersions: ["v1beta1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["bgpadvertisements"]
+        scope: "*"
+  - name: communityvalidationwebhook.metallb.io
+    matchPolicy: Equivalent
+    failurePolicy: Fail
+    sideEffects: None
+    admissionReviewVersions: ["v1"]
+    clientConfig:
+      service:
+        name: metallb-webhook-service
+        namespace: metallb-system
+        path: /validate-metallb-io-v1beta1-community
+        port: 9443
+    rules:
+      - apiGroups: ["metallb.io"]
+        apiVersions: ["v1beta1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["communities"]
+        scope: "*"
+  - name: ipaddresspoolvalidationwebhook.metallb.io
+    matchPolicy: Equivalent
+    failurePolicy: Fail
+    sideEffects: None
+    admissionReviewVersions: ["v1"]
+    clientConfig:
+      service:
+        name: metallb-webhook-service
+        namespace: metallb-system
+        path: /validate-metallb-io-v1beta1-ipaddresspool
+        port: 9443
+    rules:
+      - apiGroups: ["metallb.io"]
+        apiVersions: ["v1beta1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["ipaddresspools"]
+        scope: "*"
+  - name: l2advertisementvalidationwebhook.metallb.io
+    matchPolicy: Equivalent
+    failurePolicy: Fail
+    sideEffects: None
+    admissionReviewVersions: ["v1"]
+    clientConfig:
+      service:
+        name: metallb-webhook-service
+        namespace: metallb-system
+        path: /validate-metallb-io-v1beta1-l2advertisement
+        port: 9443
+    rules:
+      - apiGroups: ["metallb.io"]
+        apiVersions: ["v1beta1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["l2advertisements"]
+        scope: "*"
