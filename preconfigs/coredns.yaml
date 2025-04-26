@@ -59,7 +59,7 @@ data:
           lameduck 5s
         }
         ready
-        kubernetes ${DOMAIN} ${CLUSTER_IP_RANGE} ${BASE_WORKER_SUBNET} metallb-system.svc.${DOMAIN} {
+        kubernetes ${DOMAIN} ${CLUSTER_IP_RANGE} ${BASE_WORKER_SUBNET} metallb-webhook-service.metallb-system.svc {
           fallthrough in-addr.arpa ip6.arpa
         }
         prometheus :9153
